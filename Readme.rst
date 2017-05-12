@@ -1,5 +1,5 @@
-Ansible Playbook-Check with Git Hooks
-=====================================
+Automated static code analysis with pre-commit git hooks
+========================================================
 
 This repository demonstrates the usage of git hooks for
 syntax-checking Ansible playbooks before they are committed.
