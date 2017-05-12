@@ -1,0 +1,78 @@
+#!/bin/bash
+
+# Verify all ansible playbooks
+# that are to be commited.
+#
+# Copy this script into you git repository
+# at $MY_REPO_ROOT/.git/hooks/pre-commit
+
+# -----------------------------------------
+
+# Set a return code variable with an initial value of 0,
+# this variable holds the code with which we will exit the script
+# in the end.
+# If it exits with 0, the user will be prompted to enter a commit message.
+# Any other codes will cause the commit to be aborted.
+rc=0
+
+
+# Now we define a loop which will iterate over all filenames of files
+# that have been staged for commit - for either a 'modify'
+# or 'add' operation - and end with *.yml*.
+
+# 'git diff --cached --name-status' will list all the files
+# that are staged for a commit,
+# whereas the first letter will indicate whether the file has been added,
+# modified or deleted.
+# If it has been deleted, the first letter will be a 'D'
+# and there is no need to check it, so we can ignore it
+# and filter it out of the list with 'grep -Ev "^D"'.
+
+# Since playbooks are yaml files,
+# we should be able to assume they end with '.yml'.
+
+# Eventually with 'cur -f 2' we will make sure to get onlt the actual name
+# of the file and omit the git commit operation character.
+for ymlfile in $(git diff --cached --name-status | grep -Ev "^D" | grep -E "yml$" | cut -f 2)
+do
+
+	# Since the filenames now also include yaml files
+	# that are not ansible playbooks,
+	# we need a way to figure out which ones are in fact playbooks.
+
+	# I decided to do this by looking for a 'hosts:' term in the file.
+	# It's not flawless, but good enough for the time being.
+
+	# The 'grep -E "hosts:"' command will return exit code '0'
+	# if the file does contain the term.
+	cat "$ymlfile" | grep -E "hosts:"
+	if [ $? -ne 0 ]
+	then
+		# if it does not container the 'hosts:' line
+		# we let the user know that we skip it
+		# and move out of the condition.
+		echo "Not an ansible file: ${ymlfile}"
+	else
+		# If it is, in fact, a playbook,
+		# we will also let the user know,
+		# and then run the actual playbook check.
+		echo "Check: $ymlfile"
+		ansible-playbook -vvv --check ${ymlfile}
+
+		# If the check fails, we assign a '1'
+		# to the return code variable 'rc'.
+		# Then we leave the if condition and the loop.
+		[[ $? -ne 0 ]] && rc=1 || true
+	fi
+done
+
+# Last, but not least, we check the return code, print a colourful message
+# and exit the script.
+if [ ${rc} -eq 0 ]
+then
+	echo -e "\x1B[32mAnsible playbook checks finished \x1B[1msuccessfully!\x1B[0m\n"
+else
+	echo -e "\x1B[31mAnsible playbook checks finished \x1B[1munsuccessfully!\x1B[0m\n"
+fi
+
+exit ${rc}

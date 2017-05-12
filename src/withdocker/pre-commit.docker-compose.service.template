@@ -1,0 +1,6 @@
+    SERVICE_NAME:
+        image: ansible/centos7-ansible
+        volumes:
+            - HOST_MOUNT_POINT:/ansible/YAML_FILENAME
+        command: ansible-playbook -vvv -i /null --check /ansible/YAML_FILENAME
+

@@ -1,0 +1,11 @@
+---
+- name: Do some stuff
+  hosts: localhost
+  connection: local
+  gather_facts: False
+  vars:
+          points_to_print: 8
+
+  tasks:
+  - name: Do some heavy stuff
+    shell: "i=0; while [ $i -lt {{ points_to_print }} ]; do echo .; sleep 0.5; i=$((i+1)); done"

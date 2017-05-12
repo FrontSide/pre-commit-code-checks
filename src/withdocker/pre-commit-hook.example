@@ -1,0 +1,186 @@
+#!/bin/bash
+
+# Verify all ansible playbooks
+# that are to be commited.
+#
+# Copy this script together with
+# two pre-commit.docker-compose.*.template files into you git repository
+# at $MY_REPO_ROOT/.git/hooks. This script needs to be renames to pre-commit.
+
+# -----------------------------------------
+
+# Set a return code variable with an initial value of 0,
+# this variable holds the code with which we will exit the script
+# in the end.
+# If it exits with 0, the user will be prompted to enter a commit message.
+# Any other codes will cause the commit to be aborted.
+rc=0
+
+# The following two variables give un some security in terms of
+# file paths. GIT_PROJECT_ROOT points to the top folder of our
+# git repository. GIT_HOOKS_DIR to the folder in which this script is
+# located (together with the docker template files) if it was installed.
+GIT_PROJECT_ROOT=$(git rev-parse --show-toplevel)
+GIT_HOOKS_DIR=$GIT_PROJECT_ROOT/.git/hooks
+
+# This is a neat little thing.
+# A bash trap offers a way to execute some code just before
+# the script terminates. The command that is passed to the
+# trap will be executed whenever the script exits, even if,
+# for example, the user cancels the execution of the script with <CTRL-C>.
+#
+# In our case here, the the command will purge the docker-compose file.
+trap "rm $GIT_HOOKS_DIR/pre-commit.docker-compose.yml" || true 0
+
+# First we copy the docker-compose file template to the actual copose
+# file location as it will be used later.
+cp $GIT_HOOKS_DIR/pre-commit.docker-compose.yml.template $GIT_HOOKS_DIR/pre-commit.docker-compose.yml
+
+# During the loop we will add up the numbers of ansible playbooks
+# that have been found which this variable.
+num_files_to_check=0
+
+# Now we define a loop which will iterate over all filenames of files
+# that have been staged for commit - for either a 'modify'
+# or 'add' operation - and end with *.yml*.
+
+# 'git diff --cached --name-status' will list all the files
+# that are staged for a commit,
+# whereas the first letter will indicate whether the file has been added,
+# modified or deleted.
+# If it has been deleted, the first letter will be a 'D'
+# and there is no need to check it, so we can ignore it
+# and filter it out of the list with 'grep -Ev "^D"'.
+
+# Since playbooks are yaml files,
+# we should be able to assume they end with '.yml'.
+
+# Eventually with 'cur -f 2' we will make sure to get onlt the actual name
+# of the file and omit the git commit operation character.
+for ymlfile in $(git diff --cached --name-status | grep -Ev "^D" | grep -E "yml$" | cut -f 2)
+do
+
+  # Since the filenames now also include yaml files
+  # that are not ansible playbooks,
+  # we need a way to figure out which ones are in fact playbooks.
+
+  # I decided to do this by looking for a 'hosts:' term in the file.
+  # It's not flawless, but good enough for the time being.
+
+  # The 'grep -E "hosts:"' command will return exit code '0'
+  # if the file does contain the term.
+	cat "$ymlfile" | grep -qE "hosts:"
+	if [ $? -eq 0 ]
+	then
+
+    # If it is, in fact, a playbook,
+    # we will first bump the conter variable
+    # and then generate a docker_service_name.
+    #
+    # The docker service name is the name the service
+    # that performs the containerized check for this particular
+    # playbook. The container specifications will be added
+    # to the docker compose file under this service name.
+		num_files_to_check=$(( num_files_to_check + 1))
+		docker_service_name="service_${num_files_to_check}"
+
+    # Now we will let the user know that we will perform a check on this
+    # playbook and we will defined a couple of variables that we need for
+    # docker-compose.
+		echo "Check: $ymlfile"
+		YAML_FILENAME=$(basename ${ymlfile})
+    HOST_MOUNT_POINT="$PWD/$ymlfile"
+
+    # In order to assemble the docker-compose file we will use
+    # the pre-commit-.docker-compose.service.template.
+    # We substitute the placeholder variables in it with
+    # the according properties we need for this container.
+    #
+    # The HOST_MOUNT_POINT is the path to the ansible
+    # playbook that is to be checked. It will be mounted
+    # into the container.
+    # SERVICE_NAME is the name of the docker service as described above.
+    # YAML_FILENAME is the basename of the playbook i.e. the name of the
+    # file without the path.
+    #
+    # The substituted service block text will be appended to the
+    # docker-compose file.
+		rs1="s,HOST_MOUNT_POINT,${HOST_MOUNT_POINT},g"
+		rs2="s,SERVICE_NAME,${docker_service_name},g"
+		rs3="s,YAML_FILENAME,${YAML_FILENAME},g"
+
+		sed -e "$rs1" -e "$rs2" -e "$rs3" $GIT_HOOKS_DIR/pre-commit.docker-compose.service.template >> $GIT_HOOKS_DIR/pre-commit.docker-compose.yml
+
+	fi
+
+done
+
+# If no playbook was found, we will at this point leave the script
+# with a successful returncode. No checks are performed and the user
+# can just proceed with entering a commit message.
+[[ ${num_files_to_check} -eq 0 ]] && echo "Nothing to check." && exit 0
+
+# At this point we know that there is at least one playbook to be checked.
+# We will start the checking by running docker-comand up,
+# which will start all services defined in the pre-commit.docker-compose.yml
+# file in parallel.
+# Since the output of this command is pretty verbose, we redirect it to
+# /dev/null to hide it from the user.
+echo "Checks in progess..."
+docker-compose -f $GIT_HOOKS_DIR/pre-commit.docker-compose.yml up &> /dev/null
+echo "Checks finished. Analyse results..."
+
+# At this point, the checks have finished.
+# We now need to find out if - and if yes - which playbook
+# was checked unsuccessfully, i.e., which playbook contains
+# a syntactic mistake.
+#
+# To do this, iterate over all container ids from the previous
+# docker-compose operation. We can do this by running
+# docker-compose ps -q and by defining the same docker-compose file as we
+# used above.
+for container_id in $(docker-compose -f $GIT_HOOKS_DIR/pre-commit.docker-compose.yml ps -q)
+do
+
+  # Now we need to check the return code of the container.
+  # This can be done with docker inspect and some filter magic.
+	container_rc=$(docker inspect ${container_id} -f '{{ .State.ExitCode }}' | grep -v 0 | wc -l | tr -d ' ')
+
+  # if the container exit code was anything other than 0
+  # we - first of all - set the script return code to 1,
+  # and then print the logs of the container that performed the failed
+  # syntax check. This will show the user the ansible-playbook --check output
+  # and therefore the place of the error.
+  # We will also use docker inspect again to find the name of the
+  # ansible playbook that was checked with this container, in order
+  # to make debugging easier for the developer.
+  if [ ${container_rc} -ne 0 ]
+	then
+    rc=1
+		echo -e "\x1B[31m---------------------------------\x1B[0m\n"
+		echo -e "\x1B[31mError in file $(docker inspect ${container_id} -f '{{ (index .Mounts 0).Source }}')\x1B[0m\n"
+		echo -e "\x1B[31m---------------------------------\x1B[0m\n"
+		docker logs ${container_id}
+		echo -e "\x1B[31m---------------------------------\x1B[0m\n"
+
+	fi
+done
+
+# Now that we have inspected all containers, we can clean them up
+# by running a docker-compose rm. Again we need to specify the
+# same docker-compose file as above.
+docker-compose -f $GIT_HOOKS_DIR/pre-commit.docker-compose.yml rm -f --all &> /dev/null
+
+# Eventually, we check the return code for this script
+# and print an according message, just before we exit the script with this code.
+# If the exit code is 0, the user will be able to enter a commit message,
+# otherwise commit will be aborted, and the user whill need to change the
+# playbook errors and commit again.
+if [ ${rc} -eq 0 ]
+then
+	echo -e "\x1B[32mAnsible playbook checks finished \x1B[1msuccessfully!\x1B[0m\n"
+else
+	echo -e "\x1B[31mAnsible playbook checks finished \x1B[1munsuccessfully!\x1B[0m\n"
+fi
+
+exit ${rc}
