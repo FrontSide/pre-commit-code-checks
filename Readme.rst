@@ -1,8 +1,8 @@
 Automated static code analysis with pre-commit git hooks
 ========================================================
 
-This repository demonstrates the usage of git hooks for
-syntax-checking Ansible playbooks before they are committed.
+This repository demonstrates the usage of [git hooks for
+syntax-checking](https://medium.com/@david_28274/automated-pre-commit-code-checks-with-and-without-docker-b4a6ccf249ce) Ansible playbooks before they are committed.
 
 The example pre-commit hook script in `src/nodocker` runs an `ansible-playbook --check`
 command for each playbook that has been added or modified since the last commit.
@@ -24,6 +24,8 @@ If the check fails, the commit will be aborted.
 If the check succeeds, the editor for entering
 your commit message will be opened and you can
 finish the commit.
+
+Still confused? I don't blame you. Maybe my [the article I wrote about this topic](https://medium.com/@david_28274/automated-pre-commit-code-checks-with-and-without-docker-b4a6ccf249ce) will help: 
 
 Installing a pre-commit git hook
 ================================
